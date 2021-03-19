@@ -1,0 +1,3 @@
+[submodule "include/Matrix-Library"]
+	path = include/Matrix-Library
+	url = https://github.com/VineetPalepu/Matrix-Library.git
