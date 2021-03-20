@@ -3,6 +3,8 @@
 #include <future>
 #include <vector>
 #include <unordered_map>
+#include <string>
+#include <random>
 
 #include "Matrix.h"
 #include "Timer.h"
@@ -22,54 +24,61 @@ vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParamsParallel(Matrix<
 template<typename... HyperParameters>
 vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParams(Matrix<double> percent_changes_data, FinancialAlgorithm<HyperParameters ...> alg, vector<tuple<HyperParameters ...>> paramsList);
 
-Matrix<double> algo(Matrix<double> percent_change_data, tuple<double, double, double, int> parameters);
+Matrix<double> algo(Matrix<double> percent_change_data, tuple<double, double, double, double, int> parameters);
 Matrix<double> net_growth(Matrix<double> percent_change_data);
+
+tuple<Matrix<double>, Matrix<double>> getDataFromCSV(string filepath);
 
 vector<int> getSplitIndexes(int length, int groups);
 vector<double> getParamRange(double lowVal, double highVal, int num);
 
 int main()
 {
-    // Load data
-    Matrix<double> daily_values = Matrix<double>::fromFile("../data/Daily Values 1980-Present.csv");    
-    std::cout << daily_values.shape() << std::endl;
+    Matrix<double> a {2,3};
+    a.randInit();
+    a.print();
+    a.save("a.mat");
+    a.print();
+    Matrix<double> b = Matrix<double>::load("a.mat");
+    b.print();
 
-    if (!daily_values.isVector())
-        throw std::exception();
 
-    Matrix<double> percent_change {daily_values.size(), 1};
-    // Calculate percent change values for each day
-    for (int i = 1; i < daily_values.size(); i++)
-    {
-        percent_change[i] = ((daily_values[i] / daily_values[i-1]) - 1) * 100;
-    }
+    
+    Matrix<double> sp500 = Matrix<double>::fromFile("../data/S&P 500.csv");
+    //Matrix<double> nasdaq = Matrix<double>::fromFile("../data/NASDAQ.csv");
+    //Matrix<double> wilshire = Matrix<double>::fromFile("../data/Wilshire.csv");
+    //Matrix<double> dowJones = Matrix<double>::fromFile("../data/Dow Jones.csv");
 
-    vector<double> multipliers = getParamRange(1, 3, 10);
-    vector<double> pullout_thresholds = getParamRange(.8, 1.2, 10);
-    vector<double> backin_thresholds = getParamRange(.8, 1.2, 10);
+    Matrix<double> percentChanges = sp500.column(1);
 
-    vector<tuple<double, double, double, int>> params_list;
+    //cout << algo(percentChanges, {})
+    
+    vector<tuple<double, double, double, double, int>> params_list;
 
-    for (double m : multipliers)
-    {
-        for (double p : pullout_thresholds)
-        {
-            for (double b : backin_thresholds)
-            {
-                params_list.push_back({m, p, b, 10});
-            }
-        }
-    }
+    random_device rand_dev {};
+    mt19937 generator {rand_dev()};
+    uniform_int_distribution<int> multiplierDistr{1, 3};
+    uniform_real_distribution<double> outMultiplierDistr{0, 1};
+    uniform_real_distribution<double> threshDistr{.8, 1.2};
+    uniform_int_distribution<int> lookbackDayDistr{0, 20};
 
     Timer t;
+    // Random Search Parameters
+    for (int i = 0; i < 20000; i++)
+    {
+        params_list.push_back({multiplierDistr(generator), outMultiplierDistr(generator), threshDistr(generator), threshDistr(generator), lookbackDayDistr(generator)});
+    }
+    cout << t.elapsed() << " seconds to generate params" << endl;
+    
+    t.reset();
 
-    vector<tuple<tuple<double, double, double, int>, double>> results = testAlgoParamsParallel<double, double, double, int>(percent_change, algo, params_list);
+    vector<tuple<tuple<double, double, double, double, int>, double>> results = testAlgoParamsParallel<double, double, double, double, int>(percentChanges, algo, params_list);
     auto [bestParams, bestValue] = findBestResult(results);
 
-    cout << "------------------------------------------" << endl; 
+    cout << "------------------------------------------" << endl;
     double time = t.elapsed();
     cout << time << " seconds" << endl;
-    cout << "Best Parameters: " << get<0>(bestParams) << ", " << get<1>(bestParams) << ", " << get<2>(bestParams) << endl;
+    cout << "Best Parameters: " << get<0>(bestParams) << ", " << get<1>(bestParams) << ", " << get<2>(bestParams) << ", " << get<3>(bestParams) << ", " << get<4>(bestParams) << endl;
     cout << "Value: " << bestValue << endl;
     cout << "------------------------------------------" << endl;
 }
@@ -118,8 +127,6 @@ vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParamsParallel(Matrix<
     return results;
 }
 
-
-
 template<typename... HyperParameters>
 vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParams(Matrix<double> percent_changes_data, FinancialAlgorithm<HyperParameters ...> alg, vector<tuple<HyperParameters ...>> paramsList)
 {
@@ -133,12 +140,15 @@ vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParams(Matrix<double> 
     return results;
 }
 
-Matrix<double> algo(Matrix<double> percent_change_data, tuple<double, double, double, int> parameters)
+//Matrix<double> 
+
+Matrix<double> algo(Matrix<double> percent_change_data, tuple<double, double, double, double, int> parameters)
 {
     double multiplier = get<0>(parameters);
-    double pullout_thresh = get<1>(parameters);
-    double backin_thresh = get<2>(parameters);
-    int lookback_days = get<3>(parameters);
+    double outMultiplier = get<1>(parameters);
+    double pullout_thresh = get<2>(parameters);
+    double backin_thresh = get<3>(parameters);
+    int lookback_days = get<4>(parameters);
     
     
     
@@ -159,9 +169,9 @@ Matrix<double> algo(Matrix<double> percent_change_data, tuple<double, double, do
         Matrix<double> growth_last_n_days = net_growth(percent_change_data.subVector(upper_bound, lower_bound));
 
         if (in_market)
-            investment_value[i] = investment_value[i - 1] * (1 + in_market * multiplier * percent_change_data[i] / 100);
+            investment_value[i] = investment_value[i - 1] * (1 + multiplier * percent_change_data[i]);
         else
-            investment_value[i] = investment_value[i - 1];
+            investment_value[i] = investment_value[i - 1] * (1 + outMultiplier * percent_change_data[i]);;
 
         if (i > n && growth_last_n_days.min() <= pullout_thresh)
             in_market = false;
@@ -185,11 +195,11 @@ Matrix<double> net_growth(Matrix<double> percent_change_data)
     
     Matrix<double> growth {percent_change_data.size(), 1};
 
-    growth[0] = 1 + percent_change_data[0] / 100;
+    growth[0] = 1 + percent_change_data[0];
 
     for (int i = 1; i < percent_change_data.size(); i++)
     {
-        growth[i] = growth[i - 1] * (1 + percent_change_data[i] / 100);
+        growth[i] = growth[i - 1] * (1 + percent_change_data[i]);
     }
 
     return growth;
