@@ -10,40 +10,28 @@
 using namespace std;
 using namespace MatrixLibrary;
 
-vector<int> getSplitIndexes(int length, int groups);
-vector<double> getParamRange(double lowVal, double highVal, int num);
-Matrix<double> algo(Matrix<double> percent_change_data, double multiplier, double pullout_thresh, double backin_thresh, int lookback_days);
+template<typename... HyperParameters>
+using FinancialAlgorithm = function<Matrix<double>(Matrix<double>, tuple<HyperParameters...>)>;
+
+template<typename... HyperParameters>
+tuple<tuple<HyperParameters ...>, double> findBestResult(vector<tuple<tuple<HyperParameters ...>, double>> results);
+
+template<typename... HyperParameters>
+vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParamsParallel(Matrix<double> percent_changes_data, FinancialAlgorithm<HyperParameters ...> alg, vector<tuple<HyperParameters ...>> paramsList);
+
+template<typename... HyperParameters>
+vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParams(Matrix<double> percent_changes_data, FinancialAlgorithm<HyperParameters ...> alg, vector<tuple<HyperParameters ...>> paramsList);
+
+Matrix<double> algo(Matrix<double> percent_change_data, tuple<double, double, double, int> parameters);
 Matrix<double> net_growth(Matrix<double> percent_change_data);
 
-struct hyperparameters
-{
-    double multiplier;
-    double pullout_thresh;
-    double backin_thresh;
-
-    bool operator==(const hyperparameters& o) const
-    {
-        return o.multiplier == multiplier && o.pullout_thresh == pullout_thresh && o.backin_thresh == backin_thresh;
-    }
-};
-
-template <>
-struct hash<hyperparameters>
-{
-    size_t operator()(const hyperparameters& params) const
-    {
-        return hash<double>()(params.multiplier) ^ hash<double>()(params.pullout_thresh) ^ hash<double>()(params.backin_thresh);
-    }
-};
-
-using FinancialAlgorithm = Matrix<double> (*)(Matrix<double>, double, double, double, int);
-
-vector<tuple<hyperparameters, double>> findOptimal(FinancialAlgorithm alg, vector<hyperparameters> paramsList, Matrix<double> percent_changes_data);
+vector<int> getSplitIndexes(int length, int groups);
+vector<double> getParamRange(double lowVal, double highVal, int num);
 
 int main()
 {
     // Load data
-    Matrix<double> daily_values = Matrix<double>::fromFile("../data/Daily Values 1980-Present.csv");
+    Matrix<double> daily_values = Matrix<double>::fromFile("../data/Daily Values 1980-Present.csv");    
     std::cout << daily_values.shape() << std::endl;
 
     if (!daily_values.isVector())
@@ -56,11 +44,11 @@ int main()
         percent_change[i] = ((daily_values[i] / daily_values[i-1]) - 1) * 100;
     }
 
-    vector<double> multipliers = getParamRange(1, 3, 50);
-    vector<double> pullout_thresholds = getParamRange(.8, 1.2, 50);
-    vector<double> backin_thresholds = getParamRange(.8, 1.2, 50);
+    vector<double> multipliers = getParamRange(1, 3, 10);
+    vector<double> pullout_thresholds = getParamRange(.8, 1.2, 10);
+    vector<double> backin_thresholds = getParamRange(.8, 1.2, 10);
 
-    vector<hyperparameters> params_list;
+    vector<tuple<double, double, double, int>> params_list;
 
     for (double m : multipliers)
     {
@@ -68,127 +56,92 @@ int main()
         {
             for (double b : backin_thresholds)
             {
-                params_list.push_back({m, p, b});
+                params_list.push_back({m, p, b, 10});
             }
         }
     }
 
     Timer t;
 
-    int cores = thread::hardware_concurrency();
-    int prevIndex = 0;
+    vector<tuple<tuple<double, double, double, int>, double>> results = testAlgoParamsParallel<double, double, double, int>(percent_change, algo, params_list);
+    auto [bestParams, bestValue] = findBestResult(results);
 
+    cout << "------------------------------------------" << endl; 
+    double time = t.elapsed();
+    cout << time << " seconds" << endl;
+    cout << "Best Parameters: " << get<0>(bestParams) << ", " << get<1>(bestParams) << ", " << get<2>(bestParams) << endl;
+    cout << "Value: " << bestValue << endl;
+    cout << "------------------------------------------" << endl;
+}
 
-    vector<future<vector<tuple<hyperparameters, double>>>> futures;
-
-    for (int index : getSplitIndexes(params_list.size(), cores))
+template<typename... HyperParameters>
+tuple<tuple<HyperParameters ...>, double> findBestResult(vector<tuple<tuple<HyperParameters ...>, double>> results)
+{
+    tuple<HyperParameters ...> bestParams;
+    double bestValue = 0;
+    for (auto pair : results)
     {
-        vector<hyperparameters> params (params_list.begin() + prevIndex, params_list.begin() + index);
+        double value = get<1>(pair);
+        if (value > bestValue)
+        {
+            bestValue = value;
+            bestParams = get<0>(pair);
+        }
+    }
+    return {bestParams, bestValue};
+}
 
-        futures.push_back(async(findOptimal, algo, params, percent_change));
+template<typename... HyperParameters>
+vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParamsParallel(Matrix<double> percent_changes_data, FinancialAlgorithm<HyperParameters ...> alg, vector<tuple<HyperParameters ...>> paramsList)
+{
+    int cores = thread::hardware_concurrency();
+
+    vector<future<vector<tuple<tuple<HyperParameters ...>, double>>>> futures;
+
+    int prevIndex = 0;
+    for (int index : getSplitIndexes(paramsList.size(), cores))
+    {
+        vector<tuple<HyperParameters ...>> params (paramsList.begin() + prevIndex, paramsList.begin() + index);
+
+        futures.push_back(async(testAlgoParams<HyperParameters ...>, percent_changes_data, alg, params));
 
         prevIndex = index;
     }
 
-    vector<tuple<hyperparameters, double>> results;
-
-    for (uint8_t i = 0; i < futures.size(); i++)
+    vector<tuple<tuple<HyperParameters ...>, double>> results;
+    for (int i = 0; i < cores; i++)
     {
-        vector<tuple<hyperparameters, double>> res = futures[i].get();
-        
-        results.insert(results.end(), res.begin(), res.end());
+        vector<tuple<tuple<HyperParameters ...>, double>> result = futures[i].get();
+        results.insert(results.end(), result.begin(), result.end());
     }
 
-
-
-    hyperparameters bestParams;
-    double bestValue = 0;
-    for (auto result : results)
-    {
-        hyperparameters params = get<0>(result);
-        double value = get<1>(result);
-        
-        //cout << "(" << params.multiplier << ", "  << params.pullout_thresh << ", " << params.backin_thresh << ")" << ": " << get<1>(result) << endl;
-
-        if (get<1>(result) > bestValue)
-        {
-            bestValue = get<1>(result);
-            bestParams = get<0>(result);
-        }
-    }
-
-    cout << "------------------------------------------" << endl; 
-    double time = t.elapsed();
-    cout << cores << " Threads" << endl;
-    cout << time << " seconds" << endl;
-    cout << "Best Parameters: " << bestParams.multiplier << ", " << bestParams.pullout_thresh << ", " << bestParams.backin_thresh << endl;
-    cout << "Value: " << bestValue << endl;
-    cout << "------------------------------------------" << endl;
-
-
-    cout << "Parameters: 3, .9, 1.1" << endl;
-    cout << "Value: " << algo(percent_change, 3, .9, 1.1, 7)[-1] << endl;
-
-    cout << "Param Diff: " << abs(bestParams.multiplier - 3) << ", " << abs(bestParams.pullout_thresh - .9) << ", " << abs(bestParams.backin_thresh - 1.1) << endl;
-    cout << "Value Ratio: " << bestValue / algo(percent_change, 3, .9, 1.1, 7)[-1] << endl;
+    return results;
 }
 
-vector<tuple<hyperparameters, double>> findOptimal(FinancialAlgorithm alg, vector<hyperparameters> paramsList, Matrix<double> percent_changes_data)
+
+
+template<typename... HyperParameters>
+vector<tuple<tuple<HyperParameters ...>, double>> testAlgoParams(Matrix<double> percent_changes_data, FinancialAlgorithm<HyperParameters ...> alg, vector<tuple<HyperParameters ...>> paramsList)
 {
-    vector<tuple<hyperparameters, double>> results;
+    vector<tuple<tuple<HyperParameters...>, double>> results;
     for (auto params : paramsList)
     {
-        double finalVal = alg(percent_changes_data, params.multiplier, params.pullout_thresh, params.backin_thresh, 7)[-1];
+        double finalVal = alg(percent_changes_data, params)[-1];
         results.push_back({params, finalVal});
     }
 
     return results;
 }
 
-vector<int> getSplitIndexes(int length, int groups)
+Matrix<double> algo(Matrix<double> percent_change_data, tuple<double, double, double, int> parameters)
 {
-    vector<int> groupSizes;
-
-    int initialSize = length / groups;
-    for (int i = 0; i < groups; i++)
-    {
-        groupSizes.push_back(initialSize);
-    }
-
-    int remainder = length % groups;
-    for (int i = 0; i < remainder; i++)
-    {
-        groupSizes[i] += 1;
-    }
-
-    vector<int> splitIndexes;
-    int curIndex = 0;
-    for (int size : groupSizes)
-    {
-        curIndex += size;
-        splitIndexes.push_back(curIndex);
-    }
-
-    return splitIndexes;
-
-}
-
-vector<double> getParamRange(double lowVal, double highVal, int num)
-{
-    vector<double> range;
-
-    double delta = (highVal - lowVal) / (num - 1);
-    for (int i = 0; i < num - 1; i++)
-    {
-        range.push_back(lowVal + delta * i);
-    }
-    range.push_back(highVal);
-
-    return range;
-}
-
-Matrix<double> algo(Matrix<double> percent_change_data, double multiplier, double pullout_thresh, double backin_thresh, int lookback_days)
-{
+    double multiplier = get<0>(parameters);
+    double pullout_thresh = get<1>(parameters);
+    double backin_thresh = get<2>(parameters);
+    int lookback_days = get<3>(parameters);
+    
+    
+    
     if (!percent_change_data.isVector())
         throw std::exception();
 
@@ -240,4 +193,46 @@ Matrix<double> net_growth(Matrix<double> percent_change_data)
     }
 
     return growth;
+}
+
+vector<int> getSplitIndexes(int length, int groups)
+{
+    vector<int> groupSizes;
+
+    int initialSize = length / groups;
+    for (int i = 0; i < groups; i++)
+    {
+        groupSizes.push_back(initialSize);
+    }
+
+    int remainder = length % groups;
+    for (int i = 0; i < remainder; i++)
+    {
+        groupSizes[i] += 1;
+    }
+
+    vector<int> splitIndexes;
+    int curIndex = 0;
+    for (int size : groupSizes)
+    {
+        curIndex += size;
+        splitIndexes.push_back(curIndex);
+    }
+
+    return splitIndexes;
+
+}
+
+vector<double> getParamRange(double lowVal, double highVal, int num)
+{
+    vector<double> range;
+
+    double delta = (highVal - lowVal) / (num - 1);
+    for (int i = 0; i < num - 1; i++)
+    {
+        range.push_back(lowVal + delta * i);
+    }
+    range.push_back(highVal);
+
+    return range;
 }
