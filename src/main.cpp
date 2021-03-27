@@ -33,21 +33,27 @@ vector<int> getSplitIndexes(int length, int groups);
 vector<double> getParamRange(double lowVal, double highVal, int num);
 
 int main()
-{
-    Matrix<double> a {2,3};
-    a.randInit();
-    a.print();
-    a.save("a.mat");
-    a.print();
-    Matrix<double> b = Matrix<double>::load("a.mat");
-    b.print();
-
-
-    
+{ 
+    Timer t;
     Matrix<double> sp500 = Matrix<double>::fromFile("../data/S&P 500.csv");
-    //Matrix<double> nasdaq = Matrix<double>::fromFile("../data/NASDAQ.csv");
-    //Matrix<double> wilshire = Matrix<double>::fromFile("../data/Wilshire.csv");
-    //Matrix<double> dowJones = Matrix<double>::fromFile("../data/Dow Jones.csv");
+    Matrix<double> nasdaq = Matrix<double>::fromFile("../data/NASDAQ.csv");
+    Matrix<double> wilshire = Matrix<double>::fromFile("../data/Wilshire.csv");
+    Matrix<double> dowJones = Matrix<do uble>::fromFile("../data/Dow Jones.csv");
+    cout << t.elapsed() << " seconds to read all data" << endl;
+
+    t.reset();
+    sp500.save("../data/S&P 500.dat");
+    nasdaq.save("../data/NASDAQ.dat");
+    wilshire.save("../data/Wilshire.dat");
+    dowJones.save("../data/Dow Jones.dat");
+    cout << t.elapsed() << " seconds to write binary data" << endl;
+
+    t.reset();
+    sp500 = Matrix<double>::load("../data/S&P 500.dat");
+    nasdaq = Matrix<double>::load("../data/NASDAQ.dat");
+    wilshire = Matrix<double>::load("../data/Wilshire.dat");
+    dowJones = Matrix<double>::load("../data/Dow Jones.dat");
+    cout << t.elapsed() << " seconds to read binary data" << endl;
 
     Matrix<double> percentChanges = sp500.column(1);
 
@@ -62,7 +68,7 @@ int main()
     uniform_real_distribution<double> threshDistr{.8, 1.2};
     uniform_int_distribution<int> lookbackDayDistr{0, 20};
 
-    Timer t;
+    t.reset();
     // Random Search Parameters
     for (int i = 0; i < 20000; i++)
     {
